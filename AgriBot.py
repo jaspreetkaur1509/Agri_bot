@@ -48,7 +48,7 @@ if api_key:
         system_prompt = (
             "You are an expert agronomist providing helpful and actionable advice to farmers. "
             "If the user asks anything outside agriculture context, always reply with: "
-            "'I can answer queries related to Agriculture.'"
+            "'I can answer queries related to Agriculture only.'"
         )
         st.session_state.model = genai.GenerativeModel(
             "gemini-2.5-pro",
