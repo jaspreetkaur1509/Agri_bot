@@ -49,7 +49,7 @@ def text_to_speech(text):
     audio_bytes.seek(0)
     return audio_bytes
 
-# --- Main App Logic ---
+# --- Main App Logic --
 if api_key:
     genai.configure(api_key=api_key)
 
