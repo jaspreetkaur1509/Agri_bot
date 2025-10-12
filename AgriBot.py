@@ -3,6 +3,8 @@ import google.generativeai as genai
 from PIL import Image
 import io
 import base64
+from gtts import gTTS
+from streamlit_mic_recorder import mic_recorder, speech_to_text
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="AgriBot - Farming Assistant", layout="wide")
@@ -36,6 +38,16 @@ def display_chat_history(chat_history):
         role = "user" if chat['role'] == "user" else "assistant"
         with st.chat_message(role):
             st.markdown(chat['message'])
+            if role == "assistant" and "audio" in chat:
+                st.audio(chat["audio"], format="audio/mp3")
+
+def text_to_speech(text):
+    """Convert text to speech and return audio bytes"""
+    tts = gTTS(text=text, lang='en')
+    audio_bytes = io.BytesIO()
+    tts.write_to_fp(audio_bytes)
+    audio_bytes.seek(0)
+    return audio_bytes
 
 # --- Main App Logic ---
 if api_key:
@@ -62,28 +74,52 @@ if api_key:
         ["Crop Advice", "Pest Management", "Soil Health", "Weather Tips"]
     )
 
-    # Chat input
-    user_input = st.chat_input("Type your question here:")
+    # Option for voice or text input
+    st.subheader("🎤 Choose Input Method")
+    input_mode = st.radio("Input Type:", ["Text", "Voice"])
+
+    user_input = None
+
+    if input_mode == "Text":
+        user_input = st.chat_input("Type your question here:")
+    else:
+        st.info("Click below to record your voice question:")
+        text_result = speech_to_text(language='en', start_prompt="🎙 Start Recording", stop_prompt="⏹ Stop Recording", use_container_width=True)
+        if text_result:
+            st.success(f"Transcribed: {text_result}")
+            user_input = text_result
+
     uploaded_file = st.file_uploader("Upload crop image (optional):", type=['png', 'jpg', 'jpeg'])
 
     if user_input:
-        # Handle image upload
         image_data = get_image_bytes(uploaded_file)
         full_prompt = f"[{query_type}]\n{user_input}"
         if image_data:
             full_prompt += "\nAlso analyze the uploaded image."
 
-        # Add user message to chat
+        # Add user message
         st.session_state.chat_history.append({"role": "user", "message": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
 
         try:
-            # Send message via Gemini GenerativeModel
+            # Get response from Gemini
             response = st.session_state.chat.send_message(full_prompt)
-            st.session_state.chat_history.append({"role": "assistant", "message": response.text})
+            response_text = response.text
+
+            # Convert response to audio
+            audio_data = text_to_speech(response_text)
+
+            st.session_state.chat_history.append({
+                "role": "assistant",
+                "message": response_text,
+                "audio": audio_data
+            })
+
             with st.chat_message("assistant"):
-                st.markdown(response.text)
+                st.markdown(response_text)
+                st.audio(audio_data, format="audio/mp3")
+
         except Exception as e:
             st.error(f"Error communicating with LLM: {e}")
 
