@@ -1,131 +1,198 @@
+#############################################
+# AgriBot — LLM Vision + Local Tools
+#############################################
+
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
 import io
-import base64
+import numpy as np
 from gtts import gTTS
-from streamlit_mic_recorder import mic_recorder, speech_to_text
 
-# --- Streamlit UI ---
-st.set_page_config(page_title="AgriBot - Farming Assistant", layout="wide")
-st.title("🌱 AgriBot: Farming Assistant Chat")
+# Optional mic
+try:
+    from streamlit_mic_recorder import speech_to_text
+    HAVE_MIC = True
+except:
+    HAVE_MIC = False
 
-# Sidebar: Gemini API Key
-st.sidebar.header("Setup")
-api_key = st.sidebar.text_input("Enter your Gemini API Key:", type="password")
+# Must be first
+st.set_page_config(page_title="AgriBot - LLM Vision", layout="wide")
 
-# Sidebar: Farming tips
-st.sidebar.subheader("Farming Tips")
-st.sidebar.markdown("""
-- Rotate crops to maintain soil health. 
-- Monitor pests regularly.
-- Use organic fertilizers when possible.
-- Check weather forecasts before irrigation.
+#############################################################
+# Text-to-speech
+#############################################################
+def tts_bytes(text):
+    try:
+        tts = gTTS(text=text, lang='en')
+        bio = io.BytesIO()
+        tts.write_to_fp(bio)
+        bio.seek(0)
+        return bio.read()
+    except:
+        return None
+
+
+#############################################################
+# Local ML — Soil health (simple model)
+#############################################################
+def soil_health_score(N, P, K, ph, moisture):
+    score = N + P + K
+    if ph < 5.5 or ph > 8.2:
+        score -= 40
+    if moisture < 25:
+        score -= 25
+    if score < 120:
+        return "Low Fertility"
+    elif score < 260:
+        return "Moderate Fertility"
+    return "High Fertility"
+
+
+#############################################################
+# Local ML — Irrigation Advisor
+#############################################################
+def irrigation_adv(temp, humidity, rain, soil_m):
+    need = 40 + (temp - 20) * 2
+    need -= rain * 0.7
+    need -= soil_m * 0.5
+    need -= humidity * 0.12
+    return round(max(5, min(120, need)), 1)
+
+
+#############################################################
+# UI START
+#############################################################
+
+st.title("🌱 AgriBot — Agriculture Assistant")
+
+api_key = st.sidebar.text_input("Gemini API Key (required for chat & image)", type="password")
+
+st.sidebar.markdown("### Farming Tips")
+st.sidebar.write("""
+✅ Rotate crops  
+✅ Monitor pests regularly  
+✅ Use organic fertilizers  
+✅ Adjust irrigation to weather  
 """)
 
-# --- Helper functions ---
-def get_image_bytes(uploaded_file):
-    if uploaded_file:
-        image = Image.open(uploaded_file)
-        buffered = io.BytesIO()
-        image.save(buffered, format="PNG")
-        return base64.b64encode(buffered.getvalue()).decode()
-    return None
-
-def display_chat_history(chat_history):
-    """Display chat messages using Streamlit chat interface"""
-    for chat in chat_history:
-        role = "user" if chat['role'] == "user" else "assistant"
-        with st.chat_message(role):
-            st.markdown(chat['message'])
-            if role == "assistant" and "audio" in chat:
-                st.audio(chat["audio"], format="audio/mp3")
-
-def text_to_speech(text):
-    """Convert text to speech and return audio bytes"""
-    tts = gTTS(text=text, lang='en')
-    audio_bytes = io.BytesIO()
-    tts.write_to_fp(audio_bytes)
-    audio_bytes.seek(0)
-    return audio_bytes
-
-# --- Main App Logic --
 if api_key:
     genai.configure(api_key=api_key)
 
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = []
+tab1, tab2, tab3 = st.tabs(["📸 Leaf Diagnosis (LLM Vision)", "🧪 Soil & Irrigation", "💬 Chat"])
 
-    if 'model' not in st.session_state:
-        system_prompt = (
-            "You are an expert agronomist providing helpful and actionable advice to farmers. "
-            "If the user asks anything outside agriculture context, always reply with: "
-            "'I can answer queries related to Agriculture only.'"
-        )
-        st.session_state.model = genai.GenerativeModel(
-            "gemini-2.5-pro",
-            system_instruction=system_prompt
-        )
-        st.session_state.chat = st.session_state.model.start_chat(history=[])
+#############################################################
+# TAB 1 — Vision Diagnosis
+#############################################################
+with tab1:
+    st.subheader("Upload crop leaf for disease detection (LLM Vision)")
 
-    # Query type selection
-    query_type = st.selectbox(
-        "Select Query Type:",
-        ["Crop Advice", "Pest Management", "Soil Health", "Weather Tips"]
-    )
+    img = st.file_uploader("Upload leaf image", type=['png', 'jpg', 'jpeg'])
 
-    # Option for voice or text input
-    st.subheader("🎤 Choose Input Method")
-    input_mode = st.radio("Input Type:", ["Text", "Voice"])
+    if img and api_key:
+        st.image(img)
+        
+        if st.button("Analyze with LLM"):
+            llm = genai.GenerativeModel("gemini-2.5-pro")
 
-    user_input = None
+            prompt = """You are an expert plant pathologist.
+Inspect this leaf image and return ONLY:
 
-    if input_mode == "Text":
-        user_input = st.chat_input("Type your question here:")
+**TABLE**
+Include:
+- Disease / Condition Name
+- Severity Level (1-10)
+- Possible Cause
+- Visible Symptoms
+- Recommended Treatment
+
+**SUMMARY**
+- Max 5 bullets
+- Actionable instructions
+- Keep concise
+"""
+
+            response = llm.generate_content([prompt, {"mime_type": img.type, "data": img.read()}])
+            text = response.text
+
+            st.markdown(text)
+
+            audio = tts_bytes(text)
+            if audio:
+                st.audio(audio, format="audio/mp3")
+
+
+#############################################################
+# TAB 2 — Local ML Tools
+#############################################################
+with tab2:
+    st.subheader("🧪 Soil Health (Offline Rule Model)")
+    
+    N = st.number_input("Nitrogen", 0, 200, 30)
+    P = st.number_input("Phosphorus", 0, 200, 20)
+    K = st.number_input("Potassium", 0, 200, 20)
+    ph = st.number_input("Soil pH", 0.0, 14.0, 6.5, 0.1)
+    moisture = st.number_input("Moisture %", 0, 100, 35)
+
+    if st.button("Check Soil"):
+        s = soil_health_score(N, P, K, ph, moisture)
+        st.info(f"Soil status: {s}")
+
+    st.markdown("---")
+
+    st.subheader("💧 Irrigation Advice (Offline Rule Model)")
+    temp = st.number_input("Temperature °C", 0.0, 50.0, 28.0)
+    hum = st.number_input("Humidity %", 0, 100, 55)
+    rain = st.number_input("Recent Rainfall (mm)", 0.0, 300.0, 0.0)
+    soil_m = st.number_input("Soil Moisture %", 0.0, 100.0, 25.0)
+
+    if st.button("Recommend Water"):
+        liters = irrigation_adv(temp, hum, rain, soil_m)
+        st.success(f"Recommended irrigation: ~{liters} L/acre")
+
+
+#############################################################
+# TAB 3 — Chat assistant
+#############################################################
+with tab3:
+    st.subheader("Ask anything about farming")
+
+    query_type = st.selectbox("Query Type",
+        ["Crop Advice", "Pest Management", "Soil Health", "Weather Tips"])
+
+    mode = st.radio("Input Type", ["Text", "Voice"] if HAVE_MIC else ["Text"])
+
+    user_text = None
+    if mode == "Text":
+        user_text = st.chat_input("Ask here...")
     else:
-        st.info("Click below to record your voice question:")
-        text_result = speech_to_text(language='en', start_prompt="🎙 Start Recording", stop_prompt="⏹ Stop Recording", use_container_width=True)
-        if text_result:
-            st.success(f"Transcribed: {text_result}")
-            user_input = text_result
+        txt = speech_to_text(language='en')
+        if txt:
+            user_text = txt
+            st.success(f"You said: {txt}")
 
-    uploaded_file = st.file_uploader("Upload crop image (optional):", type=['png', 'jpg', 'jpeg'])
+    if user_text and api_key:
+        st.chat_message("user").markdown(user_text)
 
-    if user_input:
-        image_data = get_image_bytes(uploaded_file)
-        full_prompt = f"[{query_type}]\n{user_input}"
-        if image_data:
-            full_prompt += "\nAlso analyze the uploaded image."
+        system = """
+You are an expert agronomist.
+Always reply with:
 
-        # Add user message
-        st.session_state.chat_history.append({"role": "user", "message": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
+**TABLE**
+Columns must be relevant based on topic.
 
-        try:
-            # Get response from Gemini
-            response = st.session_state.chat.send_message(full_prompt)
-            response_text = response.text
+**SUMMARY**
+- max 6 bullets
+- actionable tips
+- concise
+"""
 
-            # Convert response to audio
-            audio_data = text_to_speech(response_text)
+        chat_model = genai.GenerativeModel("gemini-2.5-pro", system_instruction=system)
+        resp = chat_model.start_chat().send_message(f"[{query_type}] {user_text}")
+        text = resp.text
 
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "message": response_text,
-                "audio": audio_data
-            })
+        st.chat_message("assistant").markdown(text)
 
-            with st.chat_message("assistant"):
-                st.markdown(response_text)
-                st.audio(audio_data, format="audio/mp3")
-
-        except Exception as e:
-            st.error(f"Error communicating with LLM: {e}")
-
-    # Display previous chat history
-    if st.session_state.chat_history:
-        display_chat_history(st.session_state.chat_history)
-
-else:
-    st.info("Please enter your Gemini API key in the sidebar to start chatting.")
+        audio = tts_bytes(text)
+        if audio:
+            st.audio(audio, format="audio/mp3")
